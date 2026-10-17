@@ -1,0 +1,11 @@
+name: pay-verify
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: configuration assertion
+        run: |
+          echo "verifying collector configuration"
+          python3 -c "import sys; print('COLLECTOR_ENDPOINT must be https and reachable'); sys.exit(1)"
